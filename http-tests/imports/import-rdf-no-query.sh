@@ -21,41 +21,29 @@ popd > /dev/null
 
 pushd . > /dev/null && cd "$SCRIPT_ROOT"
 
-# create container
-
-container=$(./create-container.sh \
--f "$AGENT_CERT_FILE" \
--p "$AGENT_CERT_PWD" \
--b "$END_USER_BASE_URL" \
---title "Test" \
---slug "test" \
---parent "$END_USER_BASE_URL" \
-"$END_USER_BASE_URL")
-
-# import CSV
+# import RDF
 
 cd imports
 
-./import-csv.sh \
+./import-rdf.sh \
 -f "$AGENT_CERT_FILE" \
 -p "$AGENT_CERT_PWD" \
 -b "$END_USER_BASE_URL" \
 --title "Test" \
---query-file "$pwd/csv-test.rq" \
---file "$pwd/test.csv" \
---action "$container"
+--file "$pwd/test.ttl" \
+--file-content-type "text/turtle" \
+--action "$END_USER_BASE_URL"
 
 popd > /dev/null
 
-csv_id="test-item"
-csv_value="42"
+rdf_uri="http://vocabularies.unesco.org/thesaurus/concept7367"
 
-# wait until the imported item appears (since import is executed asynchronously)
+# wait until the imported data appears (since import is executed asynchronously)
 
 counter=20
 i=0
 
-while [ "$i" -lt "$counter" ] && ! curl -k -s -f -E "$AGENT_CERT_FILE":"$AGENT_CERT_PWD" "${container}${csv_id}/" -H "Accept: application/n-triples" >/dev/null 2>&1
+while [ "$i" -lt "$counter" ] && ! curl -G -k -s -f -E "$AGENT_CERT_FILE":"$AGENT_CERT_PWD" "$END_USER_BASE_URL" --data-urlencode "uri=${rdf_uri}" -H "Accept: application/n-triples" >/dev/null 2>&1
 do
     sleep 1 ;
     i=$(( i+1 ))
@@ -65,8 +53,9 @@ done
 
 # check item properties
 
-curl -k -f -s -N \
+curl -G -k -f -s -N \
   -E "$AGENT_CERT_FILE":"$AGENT_CERT_PWD" \
   -H "Accept: application/n-triples" \
-  "${container}${csv_id}/" \
-| grep -q "<${container}${csv_id}/> <http://www.w3.org/1999/02/22-rdf-syntax-ns#value> \"${csv_value}\"^^<http://www.w3.org/2001/XMLSchema#integer>"
+--data-urlencode "uri=${rdf_uri}" \
+  "$END_USER_BASE_URL" \
+| grep -q "<${rdf_uri}> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/2004/02/skos/core#Concept>"

@@ -76,7 +76,6 @@ import com.atomgraph.linkeddatahub.model.Import;
 import com.atomgraph.linkeddatahub.model.RDFImport;
 import com.atomgraph.linkeddatahub.model.UserAccount;
 import com.atomgraph.linkeddatahub.server.mapper.auth.webid.WebIDDelegationExceptionMapper;
-import com.atomgraph.linkeddatahub.server.factory.ApplicationFactory;
 import com.atomgraph.linkeddatahub.model.impl.AgentImpl;
 import com.atomgraph.linkeddatahub.model.impl.CSVImportImpl;
 import com.atomgraph.linkeddatahub.model.impl.FileImpl;
@@ -84,6 +83,7 @@ import com.atomgraph.linkeddatahub.model.impl.ImportImpl;
 import com.atomgraph.linkeddatahub.model.impl.RDFImportImpl;
 import com.atomgraph.linkeddatahub.model.impl.UserAccountImpl;
 import com.atomgraph.linkeddatahub.server.event.SignUp;
+import com.atomgraph.linkeddatahub.server.factory.ApplicationFactory;
 import com.atomgraph.linkeddatahub.server.filter.request.ApplicationFilter;
 import com.atomgraph.linkeddatahub.server.filter.request.ClientUriInfoFilter;
 import com.atomgraph.linkeddatahub.server.factory.ClientUriInfoFactory;
@@ -93,7 +93,6 @@ import com.atomgraph.linkeddatahub.server.io.SkolemizingDatasetProvider;
 import com.atomgraph.linkeddatahub.server.io.SkolemizingModelProvider;
 import com.atomgraph.linkeddatahub.server.model.ClientUriInfo;
 import com.atomgraph.server.mapper.ConfigurationExceptionMapper;
-import com.atomgraph.linkeddatahub.server.model.impl.ResourceBase;
 import com.atomgraph.linkeddatahub.server.factory.OntologyFactory;
 import com.atomgraph.linkeddatahub.server.factory.ServiceFactory;
 import com.atomgraph.linkeddatahub.server.factory.TemplateCallFactory;
@@ -104,7 +103,9 @@ import com.atomgraph.linkeddatahub.server.filter.request.AuthorizationFilter;
 import com.atomgraph.linkeddatahub.server.filter.request.auth.IDTokenFilter;
 import com.atomgraph.linkeddatahub.server.filter.request.ContentLengthLimitFilter;
 import com.atomgraph.linkeddatahub.server.filter.request.auth.ProxiedWebIDFilter;
+import com.atomgraph.linkeddatahub.server.filter.response.BackendInvalidationFilter;
 import com.atomgraph.linkeddatahub.server.mapper.auth.oauth2.TokenExpiredExceptionMapper;
+import com.atomgraph.linkeddatahub.server.model.impl.Dispatcher;
 import com.atomgraph.linkeddatahub.server.util.MessageBuilder;
 import com.atomgraph.linkeddatahub.vocabulary.APL;
 import com.atomgraph.linkeddatahub.vocabulary.APLC;
@@ -115,7 +116,6 @@ import com.atomgraph.processor.model.TemplateCall;
 import com.atomgraph.processor.model.impl.ParameterImpl;
 import com.atomgraph.processor.model.impl.TemplateImpl;
 import com.atomgraph.processor.vocabulary.AP;
-import com.atomgraph.server.mapper.ConstraintViolationExceptionMapper;
 import com.atomgraph.server.mapper.OntologyExceptionMapper;
 import com.atomgraph.server.mapper.ParameterExceptionMapper;
 import com.atomgraph.server.mapper.jena.DatatypeFormatExceptionMapper;
@@ -167,6 +167,8 @@ import org.apache.jena.update.UpdateFactory;
 import org.apache.jena.update.UpdateRequest;
 import org.slf4j.LoggerFactory;
 import com.atomgraph.processor.vocabulary.LDT;
+import com.atomgraph.server.mapper.SHACLConstraintViolationExceptionMapper;
+import com.atomgraph.server.mapper.SPINConstraintViolationExceptionMapper;
 import com.atomgraph.spinrdf.vocabulary.SP;
 import static com.atomgraph.spinrdf.vocabulary.SPIN.THIS_VAR_NAME;
 import java.util.Iterator;
@@ -195,7 +197,6 @@ import org.apache.http.conn.ssl.NoopHostnameVerifier;
 import org.apache.http.conn.ssl.SSLConnectionSocketFactory;
 import org.apache.http.impl.conn.PoolingHttpClientConnectionManager;
 import org.apache.http.protocol.HttpContext;
-import org.apache.jena.query.DatasetAccessor;
 import org.apache.jena.query.QuerySolutionMap;
 import org.apache.jena.rdf.model.RDFNode;
 import org.apache.jena.rdf.model.ResIterator;
@@ -634,6 +635,7 @@ public class Application extends ResourceConfig
 
         registerResourceClasses();
         registerContainerRequestFilters();
+        registerContainerResponseFilters();
         registerExceptionMappers();
         
         eventBus.register(this); // this system application will be receiving events about context changes
@@ -645,8 +647,8 @@ public class Application extends ResourceConfig
         register(new UpdateRequestProvider());
 
         if (log.isDebugEnabled()) log.debug("Adding XSLT @Providers");
-        register(new ModelXSLTWriter(getXsltExecutable(), getOntModelSpec())); // writes (X)HTML responses
-        register(new DatasetXSLTWriter(getXsltExecutable(), getOntModelSpec())); // writes XHTML responses
+        register(new ModelXSLTWriter(getXsltExecutable(), getOntModelSpec(), getDataManager())); // writes (X)HTML responses
+        register(new DatasetXSLTWriter(getXsltExecutable(), getOntModelSpec(), getDataManager())); // writes XHTML responses
 
         final com.atomgraph.linkeddatahub.Application system = this;
         register(new AbstractBinder()
@@ -670,8 +672,7 @@ public class Application extends ResourceConfig
             @Override
             protected void configure()
             {
-                bindFactory(ServiceFactory.class).to(Service.class).
-                proxy(true).proxyForSameScope(false).
+                bindFactory(ServiceFactory.class).to(new TypeLiteral<Optional<Service>>() {}).
                 in(RequestScoped.class);
             }
         });
@@ -680,8 +681,7 @@ public class Application extends ResourceConfig
             @Override
             protected void configure()
             {
-                bindFactory(ApplicationFactory.class).to(com.atomgraph.linkeddatahub.apps.model.Application.class).
-                proxy(true).proxyForSameScope(false).
+                bindFactory(ApplicationFactory.class).to(new TypeLiteral<Optional<com.atomgraph.linkeddatahub.apps.model.Application>>() {}).
                 in(RequestScoped.class);
             }
         });
@@ -690,8 +690,7 @@ public class Application extends ResourceConfig
             @Override
             protected void configure()
             {
-                bindFactory(OntologyFactory.class).to(Ontology.class).
-                proxy(true).proxyForSameScope(false).
+                bindFactory(OntologyFactory.class).to(new TypeLiteral<Optional<Ontology>>() {}).
                 in(RequestScoped.class);
             }
         });
@@ -718,7 +717,6 @@ public class Application extends ResourceConfig
             protected void configure()
             {
                 bindFactory(DataManagerFactory.class).to(com.atomgraph.client.util.DataManager.class).
-                proxy(true).proxyForSameScope(false).
                 in(RequestScoped.class);
             }
         });
@@ -728,7 +726,6 @@ public class Application extends ResourceConfig
             protected void configure()
             {
                 bindFactory(ClientUriInfoFactory.class).to(ClientUriInfo.class).
-                proxy(true).proxyForSameScope(false).
                 in(RequestScoped.class);
             }
         });
@@ -738,7 +735,6 @@ public class Application extends ResourceConfig
             protected void configure()
             {
                 bindFactory(XsltExecutableSupplierFactory.class).to(XsltExecutableSupplier.class).
-                proxy(true).proxyForSameScope(false).
                 in(RequestScoped.class);
             }
         });
@@ -748,7 +744,8 @@ public class Application extends ResourceConfig
     
     protected void registerResourceClasses()
     {
-        register(ResourceBase.class); // handles /
+        //register(ResourceBase.class); // handles /
+        register(Dispatcher.class);
     }
     
     protected void registerContainerRequestFilters()
@@ -764,6 +761,11 @@ public class Application extends ResourceConfig
         register(ContentLengthLimitFilter.class);
         register(new RDFPostCleanupInterceptor());
     }
+
+    protected void registerContainerResponseFilters()
+    {
+        if (isInvalidateCache()) register(new BackendInvalidationFilter());
+    }
     
     protected void registerExceptionMappers()
     {
@@ -771,7 +773,8 @@ public class Application extends ResourceConfig
         register(ConfigurationExceptionMapper.class);
         register(OntologyExceptionMapper.class);
         register(ModelExceptionMapper.class);
-        register(ConstraintViolationExceptionMapper.class);
+        register(SPINConstraintViolationExceptionMapper.class);
+        register(SHACLConstraintViolationExceptionMapper.class);
         register(DatatypeFormatExceptionMapper.class);
         register(ParameterExceptionMapper.class);
         register(QueryExecExceptionMapper.class);
@@ -922,14 +925,14 @@ public class Application extends ResourceConfig
         throw new WebApplicationException(new IllegalStateException("Query is not a DESCRIBE or CONSTRUCT"));
     }
     
-    public void submitImport(CSVImport csvImport, com.atomgraph.linkeddatahub.server.model.Resource importRes, Resource provGraph, DatasetAccessor accessor, String baseURI, DataManager dataManager)
+    public void submitImport(CSVImport csvImport, com.atomgraph.linkeddatahub.server.model.Resource importRes, Resource provGraph, Service service, Service adminService, String baseURI, DataManager dataManager)
     {
-        ImportListener.submit(csvImport, importRes, provGraph, accessor, baseURI, dataManager);
+        ImportListener.submit(csvImport, importRes, provGraph, service, adminService, baseURI, dataManager);
     }
     
-    public void submitImport(RDFImport rdfImport, com.atomgraph.linkeddatahub.server.model.Resource importRes, Resource provGraph, DatasetAccessor accessor, String baseURI, DataManager dataManager)
+    public void submitImport(RDFImport rdfImport, com.atomgraph.linkeddatahub.server.model.Resource importRes, Resource provGraph, Service service, Service adminService, String baseURI, DataManager dataManager)
     {
-        ImportListener.submit(rdfImport, importRes, provGraph, accessor, baseURI, dataManager);
+        ImportListener.submit(rdfImport, importRes, provGraph, service, adminService, baseURI, dataManager);
     }
     
     public static Client getClient(KeyStore keyStore, String keyStorePassword, KeyStore trustStore, Integer maxConnPerRoute, Integer maxTotalConn, ConnectionKeepAliveStrategy keepAliveStrategy) throws NoSuchAlgorithmException, KeyStoreException, UnrecoverableKeyException, KeyManagementException
@@ -1088,6 +1091,11 @@ public class Application extends ResourceConfig
     public Client getClient()
     {
         return client;
+    }
+    
+    public URI getBaseURI()
+    {
+        return baseURI;
     }
     
     public URI getSecretaryWebIDURI()
